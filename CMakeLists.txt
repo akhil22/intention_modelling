@@ -9,7 +9,8 @@ gaussian_process_catkin
 roscpp
 rospy
 sensor_msgs
-geometry_msgs)
+geometry_msgs
+visualization_msgs)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -83,7 +84,7 @@ geometry_msgs)
 catkin_package(
    INCLUDE_DIRS include
    LIBRARIES intention_modelling
-   CATKIN_DEPENDS gaussian_process_catkin roscpp rospy geometry_msgs sensor_msgs
+   CATKIN_DEPENDS gaussian_process_catkin roscpp rospy geometry_msgs sensor_msgs visualization_msgs
    DEPENDS gsl atlas cblas
 )
 
