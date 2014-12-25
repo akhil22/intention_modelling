@@ -41,6 +41,7 @@ IntentionModelling::IntentionModelling(){
 
 void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr& msg){
 	int num_markers = msg->markers.size();
+	for(int i = 0; i < num_markers; i++){}
 }
 
 int main(){
