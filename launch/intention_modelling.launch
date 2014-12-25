@@ -1,0 +1,4 @@
+<launch>
+ <node name="intention_modelling" pkg="intention_modelling" type="intention_modelling" respawn="false" output="screen"/>
+ <param name="goal_file" type="string" value="~/goal.txt"/>
+</launch>
