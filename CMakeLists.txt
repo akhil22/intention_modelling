@@ -110,7 +110,7 @@ add_executable(intention_modelling src/intention_modelling.cpp)
 
 ## Specify libraries to link a library or executable target against
  target_link_libraries(intention_modelling
-   ${catkin_LIBRARIES}
+   ${catkin_LIBRARIES} gsl atlas cblas
  )
 
 #############
