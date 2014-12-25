@@ -40,7 +40,7 @@ IntentionModelling::IntentionModelling(){
 }
 
 void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr& msg){
-	int num_markers = msg->markers.size();;
+	int num_markers = msg->markers.size();
 }
 
 int main(){
