@@ -1,5 +1,6 @@
 <launch>
  	<node name="intention_modelling" pkg="intention_modelling" type="intention_modelling" respawn="false" output="screen">
  		<param name="goal_file" type="string" value="$(find intention_modelling)/goals.txt"/>
+		<param name="timeout" value="2.0"/>
  	</node>
 </launch>

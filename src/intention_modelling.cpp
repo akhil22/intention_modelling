@@ -30,14 +30,13 @@ double evalNormalDensity(double mu, double sigma, double x){
 class IntentionModelling{
 	public:
 		IntentionModelling();
-		void getIntentions(double *intention_prob, int traj_num);
+		int num_goals;
 
 	private:
 		// node handler
 		ros::NodeHandle nh_;
 		int sliding_window_size_;
 		Trajectory *trajectories_;
-		int num_goals_;
 		float **goal_locations_;
 		int max_num_agents_;
 		double timeout_;
@@ -53,6 +52,7 @@ class IntentionModelling{
 
 		//trajectory subscriber call back function
 		void trajCB (const visualization_msgs::MarkerArray::ConstPtr& msg);
+		void getIntentions(double *intention_prob, int traj_num);
 		void readGoals();
 
 };
@@ -65,31 +65,28 @@ void IntentionModelling::getIntentions(double *intention_prob, int traj_num){
 	gaussian_process::SingleGP gpy(cov,sigman_);
 	TDoubleVector in_x(sliding_window_size_);
 	TDoubleVector in_y(sliding_window_size_);
-	TDoubleVector in_time(sliding_window_size_);
+	TVector<TDoubleVector> in_time(sliding_window_size_);
 	TDoubleVector test_time(sliding_window_size_); 
 	double mean_x[sliding_window_size_];
 	double mean_y[sliding_window_size_];
 	double var_x[sliding_window_size_];
 	double var_y[sliding_window_size_];
-	
 	for(int i = num_points - sliding_window_size_,j =0 ; i < num_points ; i++,j++){
 		in_x.insert_element(j,trajectories_[traj_num].x(i));
 		in_y.insert_element(j,trajectories_[traj_num].y(i));
-		in_time.insert_element(j,trajectories_[traj_num].time(i));
+		TDoubleVector temp_in_time(1);
+		temp_in_time.insert_element(0,trajectories_[traj_num].time(i));
+		in_time.insert_element(j, temp_in_time);
 	}
-	TVector<TDoubleVector> in_time_temp;
-	in_time_temp.insert_element(0,in_time);
-	gpx.SetData(in_time_temp,in_x);
-	gpy.SetData(in_time_temp,in_y);
-	
+	gpx.SetData(in_time,in_x);
+	gpy.SetData(in_time,in_y);
 	for(int i=0 ; i< sliding_window_size_ ;i++){
 		TDoubleVector time(1);
-		time.insert_element(1,in_time(i));
+		time.insert_element(0,in_time(i)(0));
 		gpx.Evaluate(time, mean_x[i],var_x[i]);
 		gpy.Evaluate(time, mean_y[i],var_y[i]);
 	}
-
-	for(int i = 0; i< num_goals_; i++){
+	for(int i = 0; i< num_goals; i++){
 		double prob = 1.0;
 		for(int j = 1 ; j < sliding_window_size_ ;j++){
 			double heading = atan2(in_y(j) - in_y(j-1),in_x(j) - in_x(j-1));
@@ -155,6 +152,24 @@ void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr&
 		trajectories_[marker_id].y.insert_element(n_points,msg->markers[i].pose.position.y);
 		trajectories_[marker_id].time.insert_element(n_points,msg->markers[i].header.stamp.toSec());
 		trajectories_[marker_id].num_points++;
+		trajectories_[marker_id].then = ros::Time::now();
+	}
+	double intention_prob[num_goals];
+	for(int i = 0; i< num_markers; i++){
+		int marker_id = msg->markers[i].id;
+		if(trajectories_[marker_id].num_points < sliding_window_size_){
+			ROS_WARN("%d trajectory doesnot have sufficient points", marker_id);
+			continue;
+		}
+		else{
+			ROS_WARN("%d trajectory got sufficient points" , marker_id);
+			double intention_prob[num_goals];
+			getIntentions(intention_prob, marker_id);
+			for(int j = 0; j< num_goals; j++){
+		                int n_points = trajectories_[marker_id].num_points;
+				ROS_WARN("%d current point(%f,%f) num_points = %d trajectory intention probability of(%f,%f) is %f",marker_id,trajectories_[marker_id].x(n_points),trajectories_[marker_id].y(n_points),n_points, goal_locations_[j][0], goal_locations_[j][1], intention_prob[j]);
+			}
+		}
 	}
 }
 
@@ -172,12 +187,12 @@ void IntentionModelling::readGoals(){
 	//get number of goals
 	string line;
 	getline(filep,line);
-	sscanf(line.c_str(),"%d", &num_goals_);
-	ROS_INFO("loading %d goal locations", num_goals_);
+	sscanf(line.c_str(),"%d", &num_goals);
+	ROS_INFO("loading %d goal locations", num_goals);
 
 	//initialize goal locations;
-	goal_locations_ = new float* [num_goals_];
-	for(int i=0; i<num_goals_; i++){
+	goal_locations_ = new float* [num_goals];
+	for(int i=0; i<num_goals; i++){
 		goal_locations_[i] = new float [2];
 	}
 	int j = 0;
@@ -193,17 +208,17 @@ void IntentionModelling::readGoals(){
 			k++;
 		}
 		j++;
-		if (j == num_goals_)
+		if (j == num_goals)
 			break;
 	}
 
 	//display all goal locations
-	for(int i = 0; i < num_goals_ ;i++){
+	for(int i = 0; i < num_goals ;i++){
 		ROS_WARN("goal %d (%f,%f)",i,goal_locations_[i][0],goal_locations_[i][1]);
 	}
 }
 int main(int argc, char **argv){
 	ros::init(argc,argv,"intention_modelling");
 	IntentionModelling intention_modelling;
-	return 0;
+	ros::spin();
 }
