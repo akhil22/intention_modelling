@@ -167,7 +167,7 @@ void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr&
 			getIntentions(intention_prob, marker_id);
 			for(int j = 0; j< num_goals; j++){
 		                int n_points = trajectories_[marker_id].num_points;
-				ROS_WARN("%d current point(%f,%f) num_points = %d trajectory intention probability of(%f,%f) is %f",marker_id,trajectories_[marker_id].x(n_points),trajectories_[marker_id].y(n_points),n_points, goal_locations_[j][0], goal_locations_[j][1], intention_prob[j]);
+				ROS_WARN("%d current point(%f,%f) num_points = %d trajectory intention probability of(%f,%f) is %f",marker_id,trajectories_[marker_id].x(n_points-1),trajectories_[marker_id].y(n_points-1),n_points, goal_locations_[j][0], goal_locations_[j][1], intention_prob[j]);
 			}
 		}
 	}
