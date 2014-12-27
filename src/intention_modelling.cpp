@@ -35,14 +35,21 @@ class IntentionModelling{
 	private:
 		// node handler
 		ros::NodeHandle nh_;
+
+		//num of trajectory points to be considered to calculate intention
 		int sliding_window_size_;
+		//holds trajectory information
 		Trajectory *trajectories_;
+		//holds goal locations
 		float **goal_locations_;
+		//maximum number of agents to track 
 		int max_num_agents_;
+		//time out
 		double timeout_;
+		//name of goal file
 		std::string goal_file_;
 
-		//gp hyperparam
+		//gp hyperparameters
 		double length_scale_;
 		double sigmaf_;
 		double sigman_;
@@ -52,25 +59,36 @@ class IntentionModelling{
 
 		//trajectory subscriber call back function
 		void trajCB (const visualization_msgs::MarkerArray::ConstPtr& msg);
+
+		//calculates intentions 
 		void getIntentions(double *intention_prob, int traj_num);
+
+		//reads goal locations
 		void readGoals();
 
 };
 
 void IntentionModelling::getIntentions(double *intention_prob, int traj_num){
 	int num_points = trajectories_[traj_num].num_points;
-	
+
+	//create gp for initial smoothing
 	CovFuncND cov(1,length_scale_,sigmaf_);
 	gaussian_process::SingleGP gpx(cov,sigman_);
 	gaussian_process::SingleGP gpy(cov,sigman_);
+
+	//hold x, y and time informations for points currently in sliding window
 	TDoubleVector in_x(sliding_window_size_);
 	TDoubleVector in_y(sliding_window_size_);
 	TVector<TDoubleVector> in_time(sliding_window_size_);
-	TDoubleVector test_time(sliding_window_size_); 
+	TDoubleVector test_time(sliding_window_size_);
+
+	//holds filtered values of x and y to be considered for intention prediction
 	double mean_x[sliding_window_size_];
 	double mean_y[sliding_window_size_];
 	double var_x[sliding_window_size_];
 	double var_y[sliding_window_size_];
+
+	//create input data for gaussian process
 	for(int i = num_points - sliding_window_size_,j =0 ; i < num_points ; i++,j++){
 		in_x.insert_element(j,trajectories_[traj_num].x(i));
 		in_y.insert_element(j,trajectories_[traj_num].y(i));
@@ -78,18 +96,27 @@ void IntentionModelling::getIntentions(double *intention_prob, int traj_num){
 		temp_in_time.insert_element(0,trajectories_[traj_num].time(i));
 		in_time.insert_element(j, temp_in_time);
 	}
+
+	//set the input data 
 	gpx.SetData(in_time,in_x);
 	gpy.SetData(in_time,in_y);
+
+	//calculate filtered values of x and y
 	for(int i=0 ; i< sliding_window_size_ ;i++){
 		TDoubleVector time(1);
 		time.insert_element(0,in_time(i)(0));
 		gpx.Evaluate(time, mean_x[i],var_x[i]);
 		gpy.Evaluate(time, mean_y[i],var_y[i]);
 	}
+
+	//calculate intention probability for each goal
 	for(int i = 0; i< num_goals; i++){
 		double prob = 1.0;
 		for(int j = 1 ; j < sliding_window_size_ ;j++){
+
+			//current heading
 			double heading = atan2(in_y(j) - in_y(j-1),in_x(j) - in_x(j-1));
+			//goal direction
 			double target = atan2(goal_locations_[i][1] - in_y(j), goal_locations_[i][0] - in_x(j));
 			double desired = target - heading;
 			if(desired > M_PI){
@@ -116,11 +143,12 @@ IntentionModelling::IntentionModelling(){
 	private_nh_.param ("sigmaf", sigmaf_, double(0.0));
 	private_nh_.param ("sigman", sigman_, double(log(0.1)));
 
+	//matlab gpml gives log values of hyperparameters calculate antilog to get hyperparam
 	length_scale_ = exp(length_scale_);
 	sigmaf_ = exp(sigmaf_);
 	sigman_ = exp(sigman_);
 	
-	//subscribe to get trajectory
+	//subscribe to get trajectories
 	traj_sub_ = nh_.subscribe ("human_pose", 100, &IntentionModelling::trajCB, this);
 
 	//read goals
@@ -140,6 +168,8 @@ void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr&
 	int num_markers = msg->markers.size();
 	for(int i = 0; i < num_markers; i++){		
 		int marker_id = msg->markers[i].id;
+
+		//if no data is being pulished on a trajectory for timeout time then reinitilize trajectory 
 		ros::Time current = ros::Time::now();
 		double del_t = (current - trajectories_[marker_id].then).toSec();
 		
@@ -147,6 +177,7 @@ void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr&
 			trajectories_[marker_id].num_points = 0;
 		}
 		
+		//add x y and time location to the trajectory data
 		int n_points = trajectories_[marker_id].num_points;
 		trajectories_[marker_id].x.insert_element(n_points,msg->markers[i].pose.position.x);
 		trajectories_[marker_id].y.insert_element(n_points,msg->markers[i].pose.position.y);
@@ -154,9 +185,13 @@ void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr&
 		trajectories_[marker_id].num_points++;
 		trajectories_[marker_id].then = ros::Time::now();
 	}
+
+	//calculate inentions
 	double intention_prob[num_goals];
 	for(int i = 0; i< num_markers; i++){
 		int marker_id = msg->markers[i].id;
+
+		//if points in a trajectory is less then points required then continue otherwise calculate intentions
 		if(trajectories_[marker_id].num_points < sliding_window_size_){
 			ROS_WARN("%d trajectory doesnot have sufficient points", marker_id);
 			continue;
