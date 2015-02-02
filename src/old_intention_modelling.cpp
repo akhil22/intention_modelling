@@ -1,7 +1,5 @@
 /* Author: Akhil Kumar Nagariya 
    RRC IIIT Hyderabad */
-#include<sstream>
-#include<iostream>
 #include<ros/ros.h>
 #include<stdio.h>
 #include<string>
@@ -10,8 +8,6 @@
 #include<gaussian_process_catkin/SingleGP.h>
 #include<visualization_msgs/MarkerArray.h>
 #include<visualization_msgs/Marker.h>
-#include<people_msgs/PositionMeasurement.h>
-#include<people_msgs/PositionMeasurementArray.h>
 #include<vector>
 #include<std_msgs/Header.h>
 #include<fstream>
@@ -62,7 +58,7 @@ class IntentionModelling{
 		ros::Subscriber traj_sub_;
 
 		//trajectory subscriber call back function
-		void trajCB (const people_msgs::PositionMeasurementArray::ConstPtr& msg);
+		void trajCB (const visualization_msgs::MarkerArray::ConstPtr& msg);
 
 		//calculates intentions 
 		void getIntentions(double *intention_prob, int traj_num);
@@ -142,7 +138,7 @@ IntentionModelling::IntentionModelling(){
 	private_nh_.param ("sliding_window_size", sliding_window_size_, int(4));
 	private_nh_.param ("max_num_agents", max_num_agents_, int(10));
 	private_nh_.param ("timout", timeout_, double(2));
-	private_nh_.param ("goal_file", goal_file_, std::string("/home/akhil/goals.txt"));
+	private_nh_.param ("goal_file", goal_file_, std::string("~/goals.txt"));
 	private_nh_.param ("length_scale", length_scale_, double(0.0));
 	private_nh_.param ("sigmaf", sigmaf_, double(0.0));
 	private_nh_.param ("sigman", sigman_, double(log(0.1)));
@@ -168,49 +164,45 @@ IntentionModelling::IntentionModelling(){
 	}
 }
 
-void IntentionModelling::trajCB(const people_msgs::PositionMeasurementArray::ConstPtr& msg){
-	int num_markers = msg->people.size();
-	for(int i = 0; i < num_markers; i++){
-		istringstream convert(msg->people[i].object_id); 
-		int person_id;
-		convert>>person_id;
+void IntentionModelling::trajCB(const visualization_msgs::MarkerArray::ConstPtr& msg){
+	int num_markers = msg->markers.size();
+	for(int i = 0; i < num_markers; i++){		
+		int marker_id = msg->markers[i].id;
 
 		//if no data is being pulished on a trajectory for timeout time then reinitilize trajectory 
-		ros::Time current = msg->people[i].header.stamp;
-		double del_t = (current - trajectories_[person_id].then).toSec();
+		ros::Time current = ros::Time::now();
+		double del_t = (current - trajectories_[marker_id].then).toSec();
 		
 		if (del_t > timeout_){
-			trajectories_[person_id].num_points = 0;
+			trajectories_[marker_id].num_points = 0;
 		}
 		
 		//add x y and time location to the trajectory data
-		int n_points = trajectories_[person_id].num_points;
-		trajectories_[person_id].x.insert_element(n_points,msg->people[i].pos.x);
-		trajectories_[person_id].y.insert_element(n_points,msg->people[i].pos.y);
-		trajectories_[person_id].time.insert_element(n_points,msg->people[i].header.stamp.toSec());
-		trajectories_[person_id].num_points++;
-		trajectories_[person_id].then = current;
+		int n_points = trajectories_[marker_id].num_points;
+		trajectories_[marker_id].x.insert_element(n_points,msg->markers[i].pose.position.x);
+		trajectories_[marker_id].y.insert_element(n_points,msg->markers[i].pose.position.y);
+		trajectories_[marker_id].time.insert_element(n_points,msg->markers[i].header.stamp.toSec());
+		trajectories_[marker_id].num_points++;
+		trajectories_[marker_id].then = ros::Time::now();
 	}
 
 	//calculate inentions
 	double intention_prob[num_goals];
 	for(int i = 0; i< num_markers; i++){
-		istringstream convert(msg->people[i].object_id); 
-		int person_id;
-		convert>>person_id;
+		int marker_id = msg->markers[i].id;
 
 		//if points in a trajectory is less then points required then continue otherwise calculate intentions
-		if(trajectories_[person_id].num_points < sliding_window_size_){
-			ROS_WARN("%d trajectory doesnot have sufficient points", person_id);
+		if(trajectories_[marker_id].num_points < sliding_window_size_){
+			ROS_WARN("%d trajectory doesnot have sufficient points", marker_id);
 			continue;
 		}
 		else{
-			ROS_WARN("%d trajectory got sufficient points" , person_id);
+			ROS_WARN("%d trajectory got sufficient points" , marker_id);
 			double intention_prob[num_goals];
-			getIntentions(intention_prob, person_id);
+			getIntentions(intention_prob, marker_id);
 			for(int j = 0; j< num_goals; j++){
-		                int n_points = trajectories_[person_id].num_points;
-				ROS_WARN("%d current point(%f,%f) num_points = %d trajectory intention probability of(%f,%f) is %f",person_id,trajectories_[person_id].x(n_points-1),trajectories_[person_id].y(n_points-1),n_points, goal_locations_[j][0], goal_locations_[j][1], intention_prob[j]);
+		                int n_points = trajectories_[marker_id].num_points;
+				ROS_WARN("%d current point(%f,%f) num_points = %d trajectory intention probability of(%f,%f) is %f",marker_id,trajectories_[marker_id].x(n_points-1),trajectories_[marker_id].y(n_points-1),n_points, goal_locations_[j][0], goal_locations_[j][1], intention_prob[j]);
 			}
 		}
 	}

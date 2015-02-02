@@ -10,6 +10,7 @@ roscpp
 rospy
 sensor_msgs
 geometry_msgs
+people_msgs
 visualization_msgs)
 
 ## System dependencies are found with CMake's conventions
