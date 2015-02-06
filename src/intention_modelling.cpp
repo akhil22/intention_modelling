@@ -6,6 +6,7 @@
 #include<stdio.h>
 #include<string>
 #include<geometry_msgs/Pose.h>
+#include<geometry_msgs/PoseArray.h>
 #include<gaussian_process_catkin/covarianceFunctions.h>
 #include<gaussian_process_catkin/SingleGP.h>
 #include<visualization_msgs/MarkerArray.h>
@@ -28,6 +29,7 @@ struct Trajectory{
 	TDoubleVector x;
 	TDoubleVector y;
 	ros::Time then;
+	geometry_msgs::Quaternion orientation;
 };
 typedef std::map< std::string,Trajectory>::iterator it_type; 
 
@@ -39,8 +41,9 @@ class IntentionModelling{
 	public:
 		IntentionModelling();
 		int num_goals;
-		void getIntentions();
+		void getIntentions(ros::Publisher);
 		double calc_distance(float x1, float y1, float x2, float y2);
+		void getHeading(float , float ,float ,float,float&,float& );
 
 	private:
 		// node handler
@@ -49,7 +52,7 @@ class IntentionModelling{
 		//num of trajectory points to be considered to calculate intention
 		int sliding_window_size_;
 		//holds trajectory information
-	 	std::map< std::string,Trajectory>trajectories_;
+		std::map< std::string,Trajectory>trajectories_;
 		//holds goal locations
 		float **goal_locations_;
 		//maximum number of agents to track 
@@ -60,12 +63,14 @@ class IntentionModelling{
 		double dist_thresh_;
 		//name of goal file
 		std::string goal_file_;
+		//step size
+		double step_size_;
 
 		//gp hyperparameters
 		double length_scale_;
 		double sigmaf_;
 		double sigman_;
-		
+
 		//trajectory data subscriber
 		ros::Subscriber traj_sub_;
 
@@ -82,119 +87,162 @@ class IntentionModelling{
 double IntentionModelling::calc_distance(float x1, float y1, float x2, float y2){
 	return sqrt(pow((x1-x2),2) + pow((y1-y2),2));
 }
+void IntentionModelling::getHeading(float x1,float y1,float x2,float y2,float& x_cap,float& y_cap){
+	double dist = calc_distance(x1,y1,x2,y2);
+	x_cap = (x2 - x1)/dist;
+	y_cap = (y2 - y1)/dist;
+}
 
-void IntentionModelling::getIntentions(){
+void IntentionModelling::getIntentions(ros::Publisher smooth_human_pose){
 	for(it_type itr = trajectories_.begin(); itr != trajectories_.end();itr++){
 		int n_points = itr->second.num_points;
-		ROS_INFO("found %s at (%f, %f) time = %f",itr->first.c_str(),itr->second.x(n_points-1),itr->second.y(n_points-1),itr->second.time(n_points-1));
+		//		ROS_INFO("found %s at (%f, %f) time = %f",itr->first.c_str(),itr->second.x(n_points-1),itr->second.y(n_points-1),itr->second.time(n_points-1));
+		int num_points = itr->second.num_points;
+		if(num_points <= sliding_window_size_){
+			ROS_INFO("NOT ENOUGH POINTS %d",num_points);
+			return;
+		}
+		//create gp for initial smoothing
+		CovFuncND cov(1,length_scale_,sigmaf_);
+		gaussian_process::SingleGP gpx(cov,sigman_);
+		gaussian_process::SingleGP gpy(cov,sigman_);
+
+
+		//hold x, y and time informations for points currently in sliding window
+		TDoubleVector in_x(sliding_window_size_+1);
+		TDoubleVector in_y(sliding_window_size_+1);
+		TVector<TDoubleVector> in_time(sliding_window_size_+1);
+		TDoubleVector test_time(sliding_window_size_+1);
+
+		//holds filtered values of x and y to be considered for intention prediction
+		double mean_x[sliding_window_size_+1];
+		double mean_y[sliding_window_size_+1];
+		double var_x[sliding_window_size_+1];
+		double var_y[sliding_window_size_+1];
+		//create input data for gaussian process
+		int initial_point  =  num_points - sliding_window_size_;
+		double arc_length = 0;
+		for(int i = num_points - sliding_window_size_,j =0 ; i < num_points ; i++,j++){
+			if(j!= 0)
+				arc_length = arc_length + calc_distance(itr->second.x(i-1),itr->second.y(i-1),itr->second.x(i),itr->second.y(i));
+			in_x.insert_element(j,itr->second.x(i));
+			in_y.insert_element(j,itr->second.y(i));
+			//		in_x.insert_element(j,1);
+			//		in_y.insert_element(j,1);
+			TDoubleVector temp_in_time(1);
+			temp_in_time.insert_element(0,itr->second.time(i) - itr->second.time(initial_point));
+			//	temp_in_time.insert_element(0,i-initial_point);
+			in_time.insert_element(j, temp_in_time);
+		}
+		double avg_velocity = arc_length/(itr->second.time(num_points-1) - itr->second.time(initial_point));
+		ROS_INFO("average_velocity= %f",avg_velocity);
+		for (int l = 0 ;l<num_goals;l++){
+			float x_cap=0;
+			float y_cap=0;
+			getHeading(itr->second.x(num_points-1),itr->second.y(num_points-1),goal_locations_[l][0],goal_locations_[l][1],x_cap,y_cap);
+			ROS_INFO("Heading for goal %d = (%f,%f)",l,x_cap,y_cap);
+			double x_future = itr->second.x(sliding_window_size_-1)+x_cap*step_size_;
+			double y_future = itr->second.y(sliding_window_size_-1)+y_cap*step_size_;
+			TDoubleVector future_time(1);
+			//future_time.insert_element(0,itr->second.time(num_points-1) + step_size_/avg_velocity);
+			future_time.insert_element(0,itr->second.time(num_points-1)-itr->second.time(initial_point) + step_size_);
+			in_x.insert_element(sliding_window_size_,x_future);
+			in_y.insert_element(sliding_window_size_,y_future);
+			in_time.insert_element(sliding_window_size_,future_time);
+
+			//set the input data 
+			gpx.SetData(in_time,in_x);
+			gpy.SetData(in_time,in_y);
+			geometry_msgs::PoseArray path;
+			path.poses.resize(20);
+			float del_time = future_time(0)/sliding_window_size_;
+			ROS_INFO("del_time = %f",del_time);
+			//calculate filtered values of x and y
+			for(int i=0 ; i< sliding_window_size_ ;i++){
+				TDoubleVector time(1);
+				time.insert_element(0,in_time(sliding_window_size_-1)(0)+del_time*i);
+				gpx.Evaluate(time, mean_x[i],var_x[i]);
+				gpy.Evaluate(time, mean_y[i],var_y[i]);
+				geometry_msgs::Pose temp_pose;
+				temp_pose.position.x = mean_x[i];
+				temp_pose.position.y = mean_y[i];
+				temp_pose.position.z = 0.2;
+				temp_pose.orientation = itr->second.orientation;
+				path.poses[i] = temp_pose;
+		//		ROS_INFO("actual_points (%f %f) time = %f",in_x(i),in_y(i),in_time(i)(0));
+		//		ROS_INFO("predicted_points (%f %f) time = %f",mean_x[i],mean_y[i],in_time(i)(0));
+
+			}
+			path.header.frame_id = "map";
+			smooth_human_pose.publish(path);
+
+/*			for(int i = 0; i< num_goals; i++){
+				double prob = 1.0;
+				for(int j = 1 ; j < sliding_window_size_ ;j++){
+
+					//current heading
+					double heading = atan2(in_y(j) - in_y(j-1),in_x(j) - in_x(j-1));
+					//goal direction
+					double target = atan2(goal_locations_[i][1] - in_y(j), goal_locations_[i][0] - in_x(j));
+					double desired = target - heading;
+					if(desired > M_PI){
+						desired = desired - M_PI;
+					}
+					if(desired < -1*M_PI){
+						desired = desired + M_PI;
+					}
+					prob = prob * evalNormalDensity(0,0.2,desired);
+				}
+				//ROS_INFO("Intention Prob for goal %d = %f", i, prob);
+			}*/
+		}
 	}
 }
-/*	int num_points = trajectories_[traj_num].num_points;
-
-	//create gp for initial smoothing
-	CovFuncND cov(1,length_scale_,sigmaf_);
-	gaussian_process::SingleGP gpx(cov,sigman_);
-	gaussian_process::SingleGP gpy(cov,sigman_);
-
-	//hold x, y and time informations for points currently in sliding window
-	TDoubleVector in_x(sliding_window_size_);
-	TDoubleVector in_y(sliding_window_size_);
-	TVector<TDoubleVector> in_time(sliding_window_size_);
-	TDoubleVector test_time(sliding_window_size_);
-
-	//holds filtered values of x and y to be considered for intention prediction
-	double mean_x[sliding_window_size_];
-	double mean_y[sliding_window_size_];
-	double var_x[sliding_window_size_];
-	double var_y[sliding_window_size_];
-
-	//create input data for gaussian process
-	for(int i = num_points - sliding_window_size_,j =0 ; i < num_points ; i++,j++){
-		in_x.insert_element(j,trajectories_[traj_num].x(i));
-		in_y.insert_element(j,trajectories_[traj_num].y(i));
-		TDoubleVector temp_in_time(1);
-		temp_in_time.insert_element(0,trajectories_[traj_num].time(i));
-		in_time.insert_element(j, temp_in_time);
-	}
-
-	//set the input data 
-	gpx.SetData(in_time,in_x);
-	gpy.SetData(in_time,in_y);
-
-	//calculate filtered values of x and y
-	for(int i=0 ; i< sliding_window_size_ ;i++){
-		TDoubleVector time(1);
-		time.insert_element(0,in_time(i)(0));
-		gpx.Evaluate(time, mean_x[i],var_x[i]);
-		gpy.Evaluate(time, mean_y[i],var_y[i]);
-	}
-
-	//calculate intention probability for each goal
-	for(int i = 0; i< num_goals; i++){
-		double prob = 1.0;
-		for(int j = 1 ; j < sliding_window_size_ ;j++){
-
-			//current heading
-			double heading = atan2(in_y(j) - in_y(j-1),in_x(j) - in_x(j-1));
-			//goal direction
-			double target = atan2(goal_locations_[i][1] - in_y(j), goal_locations_[i][0] - in_x(j));
-			double desired = target - heading;
-			if(desired > M_PI){
-				desired = desired - M_PI;
-			}
-			if(desired < -1*M_PI){
-				desired = desired + M_PI;
-			}
-			prob = prob * evalNormalDensity(0,0.2,desired);
-		}
-		intention_prob[i] = prob;
-	}
-}*/
-
 IntentionModelling::IntentionModelling(){
 
 	//get parmeters
 	ros::NodeHandle private_nh_("~");
-	private_nh_.param ("sliding_window_size", sliding_window_size_, int(4));
+	private_nh_.param ("sliding_window_size", sliding_window_size_, int(10));
 	private_nh_.param ("max_num_agents", max_num_agents_, int(10));
 	private_nh_.param ("timout", timeout_, double(2));
 	private_nh_.param ("goal_file", goal_file_, std::string("/home/akhil/goals.txt"));
-	private_nh_.param ("length_scale", length_scale_, double(0.0));
-	private_nh_.param ("sigmaf", sigmaf_, double(0.0));
-	private_nh_.param ("sigman", sigman_, double(log(0.1)));
-	private_nh_.param ("dist_thresh", dist_thresh_, double(0.01));
+	private_nh_.param ("length_scale", length_scale_, double(log(1.3)));
+	private_nh_.param ("sigmaf", sigmaf_, double(log(4.42)));
+	private_nh_.param ("sigman", sigman_, double(log(1.7168)));
+	private_nh_.param ("dist_thresh", dist_thresh_, double(-5.7949));
+	private_nh_.param ("step_size", step_size_, double(1.0));
 
 	//matlab gpml gives log values of hyperparameters calculate antilog to get hyperparam
 	length_scale_ = exp(length_scale_);
 	sigmaf_ = exp(sigmaf_);
 	sigman_ = exp(sigman_);
-	
+
 	//subscribe to get trajectories
 	traj_sub_ = nh_.subscribe ("human_pose", 100, &IntentionModelling::trajCB, this);
 
 	//read goals
 	readGoals();
-	
 }
 
+
 void IntentionModelling::trajCB(const people_msgs::Person::ConstPtr& msg){
-	std:string index = msg->name;
-	if(trajectories_[index].new_traj){
-		trajectories_[index].then = msg->stamp;
-		trajectories_[index].new_traj = false;
-		trajectories_[index].num_points = 0;
-		if(trajectories_[index].x.size() == 0){
-			trajectories_[index].x.resize(1000);
-			trajectories_[index].y.resize(1000);
-			trajectories_[index].time.resize(1000);
-		}
-	}
-	int n_points = trajectories_[index].num_points; 
-	if(n_points != 0 && calc_distance(msg->position.x,msg->position.y,trajectories_[index].x(n_points-1),trajectories_[index].y(n_points-1)<= dist_thresh_)){
-//		return;
-	}
-	ros::Time current = msg->stamp;
-	double del_t = (current - trajectories_[index].then).toSec();
+std:string index = msg->name;
+    if(trajectories_[index].new_traj){
+	    trajectories_[index].then = msg->stamp;
+	    trajectories_[index].new_traj = false;
+	    trajectories_[index].num_points = 0;
+	    if(trajectories_[index].x.size() == 0){
+		    trajectories_[index].x.resize(1000);
+		    trajectories_[index].y.resize(1000);
+		    trajectories_[index].time.resize(1000);
+	    }
+    }
+    int n_points = trajectories_[index].num_points; 
+    if(n_points != 0 && calc_distance(msg->position.x,msg->position.y,trajectories_[index].x(n_points-1),trajectories_[index].y(n_points-1)<= dist_thresh_)){
+	    //		return;
+    }
+    ros::Time current = msg->stamp;
+    double del_t = (current - trajectories_[index].then).toSec();
 
 	if (del_t > timeout_){
 		trajectories_[index].num_points = 0;
@@ -204,6 +252,7 @@ void IntentionModelling::trajCB(const people_msgs::Person::ConstPtr& msg){
 	//add x y and time location to the trajectory data
 	trajectories_[index].x.insert_element(n_points,msg->position.x);
 	trajectories_[index].y.insert_element(n_points,msg->position.y);
+	trajectories_[index].orientation = msg->orientation;
 	trajectories_[index].time.insert_element(n_points,msg->stamp.toSec());
 	trajectories_[index].num_points++;
 	trajectories_[index].then = current;
@@ -270,16 +319,18 @@ void IntentionModelling::readGoals(){
 
 	//display all goal locations
 	for(int i = 0; i < num_goals ;i++){
-		ROS_WARN("goal %d (%f,%f)",i,goal_locations_[i][0],goal_locations_[i][1]);
+		ROS_WARN("goal %d `(%f,%f)",i,goal_locations_[i][0],goal_locations_[i][1]);
 	}
 }
 int main(int argc, char **argv){
 	ros::init(argc,argv,"intention_modelling");
+	ros::NodeHandle nh;
 	IntentionModelling intention_modelling;
+	ros::Publisher smooth_human_pose = nh.advertise<geometry_msgs::PoseArray>("human_pose_smooth",20);
 	ros::Rate r(10);
 	while(ros::ok()){
 	    ros::spinOnce();
-	    intention_modelling.getIntentions();
+	    intention_modelling.getIntentions(smooth_human_pose);
 	    r.sleep();
 	}
 }
