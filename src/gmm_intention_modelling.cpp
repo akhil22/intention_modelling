@@ -34,9 +34,48 @@ struct Trajectory{
 };
 typedef std::map< std::string,Trajectory>::iterator it_type; 
 
-double evalNormalDensity(double mu, double sigma, double x){
-	return (1.0/(sigma*sqrt(2*M_PI)))*exp(-0.5*(x-mu)*(x-mu)/(sigma*sigma));
+double valid_angle(double theta){
+	if(theta < 0){
+		return (2*M_PI + theta);
+	}
+	return theta;
 }
+	
+double evalNormalDensity(double mu, double sigma, double x){
+	double diff = abs(x - mu);
+	if (diff > M_PI){
+		diff = 2*M_PI - diff;
+	}
+	return (1.0/(sigma*sqrt(2*M_PI)))*exp(-0.5*(diff)*(diff)/(sigma*sigma));
+}
+
+double get_observation_probability(double* current_goal,double observation,double x,double y){
+	double mu_theta = valid_angle(atan2(current_goal[1] - y,current_goal[0] - x));
+//	ROS_INFO("mu_theta = %f",mu_theta);
+	return evalNormalDensity(mu_theta,1.5,observation);
+}
+
+double get_transition_probability(double **current_goals,int i,int j,double x,double y,int num_current_goals){
+	double sum = 0;
+	double prob = 0;
+	double mu_theta = valid_angle(atan2(current_goals[i][1] - y,current_goals[i][0] - x));
+	for(int k = 0; k < num_current_goals; k++){
+		double temp_theta = valid_angle(atan2(current_goals[k][1] - y ,current_goals[k][0] - x));
+		double theta_limit = temp_theta - mu_theta;
+		theta_limit = abs(theta_limit);
+		if(theta_limit > M_PI){
+			theta_limit = 2*M_PI - theta_limit;
+		}
+	//	sum  = sum + cos(theta_limit/2);
+		sum  = sum + M_PI - theta_limit;
+		if(k == j){
+//			prob = cos(theta_limit/2);
+			prob = M_PI - theta_limit;
+		}
+	}
+	return (prob/sum);
+}
+
 class IntentionModelling{
 	public:
 		IntentionModelling();
@@ -56,7 +95,15 @@ class IntentionModelling{
 		void calcObservations(double mean_x[],double mean_y[],double observations[]);
 
 		//add dynamic goals if consider is true
-		int addDynamicGoals(double** current_goals,double x_last,double y_last,it_type itr,bool consider);
+		int addDynamicGoals(double** current_goals,double x_last,double y_last,it_type itr,double last_observation,bool consider);
+
+		//calculate hmm parameter alpha
+		void calcAlpha(double* mean_x,double* mean_y,double* observations,double** current_goals,int num_current_goals,double** alpha);
+
+		//calculate hmm parameter beta 
+		void calcBeta(double* mean_x,double* mean_y,double* observations,double** current_goals,int num_current_goals,double** beta);
+		
+		void calcGamma(double** alpha,double** beta,double** gamma,int num_current_goals);
 	private:
 		// node handler
 		ros::NodeHandle nh_;
@@ -105,7 +152,74 @@ double IntentionModelling::getHeading(float x1,float y1,float x2,float y2){
 	double dist = calc_distance(x1,y1,x2,y2);
 	double x_cap = (x2 - x1)/dist;
 	double y_cap = (y2 - y1)/dist;
-	return atan2(y_cap,x_cap);
+        return valid_angle(atan2(y_cap,x_cap));
+}
+		
+void IntentionModelling::calcAlpha(double* mean_x,double* mean_y,double* observations,double** current_goals,int num_current_goals,double** alpha){
+	double sum1 = 0;
+	for(int i = 0 ;i< num_current_goals;i++){
+			
+		alpha[0][i] = (1.0/num_current_goals)*get_observation_probability(current_goals[i],observations[0],mean_x[0],mean_y[0]);
+		sum1 = sum1+alpha[0][i];
+//		alpha[0][i] = get_observation_probability(current_goals[i],observations[0],mean_x[0],mean_y[0]);
+	}
+	for(int i =0 ;i< num_current_goals;i++){
+		alpha[0][i] = alpha[0][i]/sum1;
+	}
+	int i,t,j;
+	for(t = 1; t<sliding_window_size_;t++){
+		double sum_temp = 0;
+		for(i = 0;i< num_current_goals;i++){
+			double sum = 0;
+			for(j = 0; j< num_current_goals; j++){
+				sum = sum + alpha[t-1][j]*get_transition_probability(current_goals,j,i,mean_x[t],mean_y[t],num_current_goals);
+			}
+			alpha[t][i] = sum*get_observation_probability(current_goals[i],observations[t],mean_x[t],mean_y[t]);
+			sum_temp = sum_temp + alpha[t][i];
+			//			alpha[t][i] = get_observation_probability(current_goals[i],observations[t],mean_x[t],mean_y[t]);
+			//		alpha[t][i] = sum;
+		}
+		for(int i = 0;i<num_current_goals;i++){
+			alpha[t][i] = alpha[t][i]/sum_temp;
+		}
+	}
+}
+void IntentionModelling::calcBeta(double* mean_x,double* mean_y,double* observations,double** current_goals,int num_current_goals,double** beta){
+	double sum1 = 0;
+	for(int i = 0 ;i< num_current_goals;i++){
+		beta[sliding_window_size_-1][i] = 1.0;
+	}
+	int i,t,j;
+	for(t = sliding_window_size_-2; t>=0;t--){
+		double sum_temp = 0;
+		for(i = 0;i< num_current_goals;i++){
+			double sum = 0;
+			for(j = 0; j< num_current_goals; j++){
+				sum = sum + beta[t+1][j]*get_transition_probability(current_goals,i,j,mean_x[t],mean_y[t],num_current_goals)*get_observation_probability(current_goals[j],observations[t+1],mean_x[t+1],mean_y[t+1]);
+			}
+			beta[t][i] = sum;
+			sum_temp = sum_temp + beta[t][i];
+			//                      alpha[t][i] = get_observation_probability(current_goals[i],observations[t],mean_x[t],mean_y[t]);
+			//              alpha[t][i] = sum;
+		}
+		for(int i = 0;i<num_current_goals;i++){
+			beta[t][i] = beta[t][i]/sum_temp;
+		}
+	}
+}
+
+void IntentionModelling::calcGamma(double** alpha,double** beta,double** gamma,int num_current_goals){
+	int t,i,j;
+	for(t = 0;t<sliding_window_size_;t++){
+		double sum = 0;
+		for(i = 0;i<num_current_goals;i++){
+			gamma[t][i] = alpha[t][i]*beta[t][i];
+			sum = sum + gamma[t][i];
+		}
+		for(i =0;i<num_current_goals;i++){
+			gamma[t][i] = gamma[t][i]/sum;
+		}
+	}
 }
 void IntentionModelling::predictIntent(it_type itr){}
 
@@ -144,7 +258,35 @@ void IntentionModelling::calcObservations(double* mean_x,double* mean_y,double* 
 		observations[i] = getHeading(mean_x[i] ,mean_y[i],mean_x[i+1],mean_y[i+1]);
 	}
 }
-int IntentionModelling::addDynamicGoals(double** current_goals,double x_last,double y_last,it_type itr,bool consider){}
+int IntentionModelling::addDynamicGoals(double** current_goals,double x_last,double y_last,it_type itr,double last_observation,bool consider){
+	int i;
+	for(i =0; i<num_goals;i++){
+		current_goals[i][0] = goal_locations_[i][0];
+		current_goals[i][1] = goal_locations_[i][1];
+	}
+	if(!consider){
+		return num_goals;
+	}
+	for(it_type itr2 = trajectories_.begin();itr2 != trajectories_.end();itr2++){
+		if(itr2 == itr){
+			continue;
+		}
+		int num_points = itr2->second.num_points;
+		double theta1=getHeading(x_last,y_last,itr2->second.x(num_points-1),itr2->second.y(num_points-1));
+		double theta_limit = theta1 - last_observation;
+		theta_limit = abs(theta_limit);
+		if(theta_limit >= M_PI){
+			theta_limit = theta_limit - M_PI;
+		}
+		if(theta_limit < M_PI/2.0){
+			current_goals[i][0] = itr2->second.x(num_points-1);
+			current_goals[i][1] = itr2->second.y(num_points-1);
+			i++;
+		}
+	}
+	return i;
+
+}
 void IntentionModelling::getIntentions(){
 	for(it_type itr = trajectories_.begin(); itr != trajectories_.end();itr++){
 		int agent_num = 0;
@@ -179,11 +321,65 @@ void IntentionModelling::getIntentions(){
 		}
 		smooth_human_pose_[agent_num][0].publish(path);
 		double observations[sliding_window_size_];
-
+		double **current_goals;
+		current_goals = new double* [100];
+		for(int a = 0 ;a<100;a++){
+			current_goals[a] = new double [2];
+		}
 		//calculate the observations
 		calcObservations(mean_x,mean_y,observations);
-		for(int i =0;i<sliding_window_size_;i++)
-			ROS_INFO("headin = %f", observations[i]);
+
+		int num_current_goals = addDynamicGoals(current_goals,mean_x[sliding_window_size_-1],mean_y[sliding_window_size_-1],itr,observations[sliding_window_size_-1],true);
+//		for(int o = 0 ;o< sliding_window_size_;o++){
+//			ROS_INFO("obs %d = %f", o,observations[o]);
+//		}
+		//initialize hmm paramters 
+		double **alpha;
+		double **beta;
+		double **gamma;
+		
+		alpha = new double* [sliding_window_size_];
+		beta = new double* [sliding_window_size_];
+		gamma = new double* [sliding_window_size_];
+
+		for(int a = 0; a<sliding_window_size_ ;a++){
+			alpha[a] = new double [num_current_goals];
+			beta[a] = new double [num_current_goals];
+			gamma[a] = new double [num_current_goals];
+		}
+		calcAlpha(mean_x,mean_y,observations,current_goals,num_current_goals,alpha);
+		calcBeta(mean_x,mean_y,observations,current_goals,num_current_goals,beta);
+		calcGamma(alpha,beta,gamma,num_current_goals);
+
+/*		current_goals[0][0] = -1;
+		current_goals[0][1] =  0;
+		current_goals[1][0] = 1;
+		current_goals[1][1] = 1;
+		current_goals[2][0] = 1;
+		current_goals[2][1] = -1;
+		double prob1 = get_transition_probability(current_goals,0,0,0,0,3);
+		double prob2 = get_transition_probability(current_goals,0,1,0,0,3);
+		double prob3 = get_transition_probability(current_goals,0,2,0,0,3);
+
+		double temp_current_goal[2];
+		temp_current_goal[0]=0;
+		temp_current_goal[1]=-1;
+		double prob4 = get_observation_probability(temp_current_goal,5*M_PI/4.0,0,0);
+		ROS_INFO("curretn probs= %f,%f,%f,%f",prob1,prob2,prob3,prob4); */
+//		for(int t = 0 ; t<sliding_window_size_;t++){
+//		for(int a=0; a<num_current_goals;a++){
+//			ROS_INFO("gamma[%d,%d]= %lf",t,a,gamma[t][a]);
+//		}
+//		}
+//		for(int i =0;i<sliding_window_size_;i++)
+//			ROS_INFO("headin = %f", observations[i]);
+/*		double temp_goal[2];
+		temp_goal[0] = 0.0;
+		temp_goal[1] = -1.0;
+		double temp = get_observation_probability(temp_goal,-M_PI/3.0,0,0);
+		ROS_INFO("prob = %f",temp);
+
+*/
 
 
 	}
@@ -192,7 +388,7 @@ IntentionModelling::IntentionModelling(){
 
 	//get parmeters
 	ros::NodeHandle private_nh_("~");
-	private_nh_.param ("sliding_window_size", sliding_window_size_, int(20));
+	private_nh_.param ("sliding_window_size", sliding_window_size_, int(10));
 	private_nh_.param ("max_num_agents", max_num_agents_, int(10));
 	private_nh_.param ("timout", timeout_, double(2));
 	private_nh_.param ("goal_file", goal_file_, std::string("/home/akhil/goals.txt"));

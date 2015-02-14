@@ -11,7 +11,10 @@ rospy
 sensor_msgs
 geometry_msgs
 people_msgs
-visualization_msgs)
+visualization_msgs
+tf
+nav_msgs
+)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -104,6 +107,7 @@ include_directories(include ${catkin_INCLUDE_DIRS})
 
 ## Declare a cpp executable
 add_executable(intention_modelling src/intention_modelling.cpp)
+add_executable(gmm_intention_modelling src/gmm_intention_modelling.cpp)
 
 ## Add cmake target dependencies of the executable/library
 ## as an example, message headers may need to be generated before nodes
@@ -111,6 +115,9 @@ add_executable(intention_modelling src/intention_modelling.cpp)
 
 ## Specify libraries to link a library or executable target against
  target_link_libraries(intention_modelling
+   ${catkin_LIBRARIES} gsl atlas cblas
+ )
+ target_link_libraries(gmm_intention_modelling
    ${catkin_LIBRARIES} gsl atlas cblas
  )
 
