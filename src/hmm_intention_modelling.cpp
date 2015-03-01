@@ -30,6 +30,7 @@ struct Trajectory{
 	TDoubleVector x;
 	TDoubleVector y;
 	ros::Time then;
+	ros::Time last;
 	geometry_msgs::Quaternion orientation;
 };
 typedef std::map< std::string,Trajectory>::iterator it_type; 
@@ -134,6 +135,9 @@ class IntentionModelling{
 		ros::Subscriber traj_sub_;
 
 		ros::Publisher** smooth_human_pose_;
+
+		ros::Publisher intention_pub_;
+		ros::Publisher goal_location_pub_;
 		//trajectory subscriber call back function
 		void trajCB (const people_msgs::Person::ConstPtr& msg);
 
@@ -288,7 +292,11 @@ int IntentionModelling::addDynamicGoals(double** current_goals,double x_last,dou
 
 }
 void IntentionModelling::getIntentions(){
+	visualization_msgs::MarkerArray intentions;
 	for(it_type itr = trajectories_.begin(); itr != trajectories_.end();itr++){
+                if((ros::Time::now() - itr->second.then).toSec() > 0.4){
+			continue;
+		}
 		int agent_num = 0;
 		int camera_num = 0;
 		sscanf(itr->first.c_str(),"%d_%d",&camera_num,&agent_num);
@@ -296,7 +304,7 @@ void IntentionModelling::getIntentions(){
 
 		//should have sufficient points for intent prediction
 		if(num_points <= sliding_window_size_+2){
-			ROS_INFO("NOT ENOUGH POINTS %d",num_points);
+			ROS_INFO("NOT ENOUGH POINTS %d (%f,%f)",num_points,itr->second.x(num_points-1),itr->second.y(num_points-1));
 			return;
 		}
 		double mean_x[sliding_window_size_+1];
@@ -329,7 +337,7 @@ void IntentionModelling::getIntentions(){
 		//calculate the observations
 		calcObservations(mean_x,mean_y,observations);
 
-		int num_current_goals = addDynamicGoals(current_goals,mean_x[sliding_window_size_-1],mean_y[sliding_window_size_-1],itr,observations[sliding_window_size_-1],true);
+		int num_current_goals = addDynamicGoals(current_goals,mean_x[sliding_window_size_-1],mean_y[sliding_window_size_-1],itr,observations[sliding_window_size_-1],false);
 //		for(int o = 0 ;o< sliding_window_size_;o++){
 //			ROS_INFO("obs %d = %f", o,observations[o]);
 //		}
@@ -350,7 +358,79 @@ void IntentionModelling::getIntentions(){
 		calcAlpha(mean_x,mean_y,observations,current_goals,num_current_goals,alpha);
 		calcBeta(mean_x,mean_y,observations,current_goals,num_current_goals,beta);
 		calcGamma(alpha,beta,gamma,num_current_goals);
-
+		for(int i = 0 ;i< num_current_goals; i++){
+			visualization_msgs::Marker marker;
+			visualization_msgs::Marker marker2;
+			marker.header.frame_id = "map";
+			marker.header.stamp = ros::Time::now();
+			marker.ns = "intentions1";
+			marker.id = (agent_num+1)*100+i;
+		//	marker.id = i;
+			marker.type = visualization_msgs::Marker::ARROW;
+			marker.action = visualization_msgs::Marker::ADD;
+		//	marker.action = visualization_msgs::Marker::DELETE;
+			//marker.pose.position.x = mean_x[sliding_window_size_-2];
+			//marker.pose.position.y = mean_y[sliding_window_size_-2];
+			marker.pose.position.x = itr->second.x(num_points-1);
+			marker.pose.position.y = itr->second.y(num_points-1);
+			marker.pose.position.z = 0.2;
+			double yaw = getHeading(mean_x[sliding_window_size_],mean_y[sliding_window_size_],current_goals[i][0],current_goals[i][1]);
+			marker.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0,0,yaw);
+			marker2.header.frame_id = "map";
+			marker2.header.stamp = ros::Time::now();
+			marker2.ns = "intentions_m1";
+			marker2.id = (agent_num+1)*1000+i;
+		//	marker2.id = i;
+			marker2.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+			marker2.action = visualization_msgs::Marker::ADD;
+		//	marker2.action = visualization_msgs::Marker::DELETE;
+			marker2.pose.position.x = mean_x[sliding_window_size_-2]+1.5*cos(yaw);
+			marker2.pose.position.y = mean_y[sliding_window_size_-2]+1.5*sin(yaw);
+			marker2.pose.position.z = 0.3;
+		//	marker.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0,0,yaw);
+		//	marker.pose.orientation.y = 0.0;
+		//	marker.pose.orientation.z = 0.0;
+		//	marker.pose.orientation.w = 1.0;
+			marker.scale.x = 1.5;
+			marker.scale.y = 0.03;
+			marker.scale.z = 0.03;
+			marker2.scale.x = 0.2;
+			marker2.scale.y = 0.2;
+			marker2.scale.z = 0.2;
+			geometry_msgs::Point start,end;
+			start.x = mean_x[sliding_window_size_];
+			start.y = mean_y[sliding_window_size_];
+			start.z = 0.2;
+			end.x = current_goals[i][0];
+			end.y = current_goals[i][1];
+			end.z = 0.2;
+		//	marker.points.push_back(start);
+		//	marker.points.push_back(end);
+		//	marker.scale.x = 1;
+		//	marker.scale.y = 0.01;
+		//	marker.scale.z = 0.01;
+			marker.color.a = 1.0;
+			marker.color.r = gamma[sliding_window_size_-1][i];
+		//	marker.color.r = 1.0;
+			marker.color.g = 0.0;
+			marker.color.b = 0.0;
+			marker2.color.a = 1.0;
+			marker2.color.r = 1.0;
+			marker2.color.g = 0.0;
+			marker2.color.b = 0.0;
+			std::ostringstream ss;
+			ss<<gamma[sliding_window_size_-1][i];
+			std::string s(ss.str());
+			marker2.text = s;
+		//	ROS_INFO("%s",s.c_str());
+		//	marker.lifetime = ros::Duration(0.1);
+		//	marker2.lifetime = ros::Duration(0.1);
+			ros::Duration d(0.4);
+			marker.lifetime = d;
+			marker2.lifetime = d;
+			intentions.markers.push_back(marker);
+			intentions.markers.push_back(marker2);
+		}
 /*		current_goals[0][0] = -1;
 		current_goals[0][1] =  0;
 		current_goals[1][0] = 1;
@@ -383,6 +463,52 @@ void IntentionModelling::getIntentions(){
 
 
 	}
+	//	ROS_INFO("HO");
+	intention_pub_.publish(intentions);
+	visualization_msgs::MarkerArray goal_locs;
+	for(int i = 0; i < num_goals ;i++){
+		visualization_msgs::Marker marker;
+		// Set the frame ID and timestamp.  See the TF tutorials for information on these.
+		marker.header.frame_id = "map";
+		marker.header.stamp = ros::Time::now();
+
+		// Set the namespace and id for this marker.  This serves to create a unique ID
+		// Any marker sent with the same namespace and id will overwrite the old one
+		marker.ns = "golas1";
+		marker.id = 323232*10+i;
+
+		// Set the marker type.  Initially this is CUBE, and cycles between that and SPHERE, ARROW, and CYLINDER
+		marker.type = visualization_msgs::Marker::CUBE;
+
+		// Set the marker action.  Options are ADD, DELETE, and new in ROS Indigo: 3 (DELETEALL)
+		marker.action = visualization_msgs::Marker::ADD;
+
+		// Set the pose of the marker.  This is a full 6DOF pose relative to the frame/time specified in the header
+		marker.pose.position.x = goal_locations_[i][0];
+		marker.pose.position.y = goal_locations_[i][1];
+		marker.pose.position.z = 0.2;
+		marker.pose.orientation.x = 0.0;
+		marker.pose.orientation.y = 0.0;
+		marker.pose.orientation.z = 0.0;
+		marker.pose.orientation.w = 1.0;
+
+		// Set the scale of the marker -- 1x1x1 here means 1m on a side
+		marker.scale.x = 0.25;
+		marker.scale.y = 0.25;
+		marker.scale.z = 0.25;
+
+		// Set the color -- be sure to set alpha to something non-zero!
+		marker.color.r = 1.0f;
+		marker.color.g = 0.0f;
+		marker.color.b = 1.0f;
+		marker.color.a = 1.0;
+
+		marker.lifetime = ros::Duration();
+		goal_locs.markers.push_back(marker);
+//		ROS_WARN("goal %d `(%f,%f)",i,goal_locations_[i][0],goal_locations_[i][1]);
+	}
+	goal_location_pub_.publish(goal_locs);
+
 }
 IntentionModelling::IntentionModelling(){
 
@@ -398,7 +524,7 @@ IntentionModelling::IntentionModelling(){
 //	private_nh_.param ("length_scale", length_scale_, double(0));
 //	private_nh_.param ("sigmaf", sigmaf_, double(log(1)));
 //	private_nh_.param ("sigman", sigman_, double(log(1)));
-	private_nh_.param ("dist_thresh", dist_thresh_, double(-5.7949));
+	private_nh_.param ("dist_thresh", dist_thresh_, double(0.01));
 	private_nh_.param ("step_size", step_size_, double(0.5));
 
 	//matlab gpml gives log values of hyperparameters calculate antilog to get hyperparam
@@ -407,12 +533,13 @@ IntentionModelling::IntentionModelling(){
 	sigman_ = exp(sigman_);
 
 	//subscribe to get trajectories
-	traj_sub_ = nh_.subscribe ("human_pose", 100, &IntentionModelling::trajCB, this);
+	traj_sub_ = nh_.subscribe ("human_pose1", 100, &IntentionModelling::trajCB, this);
 
+	ros::NodeHandle nh;
+	goal_location_pub_ = nh.advertise<visualization_msgs::MarkerArray>("goal_locations1",10);
 	//read goals
 	readGoals();
 	smooth_human_pose_ = new ros::Publisher* [max_num_agents_];
-	ros::NodeHandle nh;
 	for (int i =0; i<max_num_agents_; i++){
 		smooth_human_pose_[i] = new ros::Publisher [num_goals];
 		for(int j =0 ;j<num_goals;j++){
@@ -421,6 +548,7 @@ IntentionModelling::IntentionModelling(){
 			smooth_human_pose_[i][j] = nh.advertise<nav_msgs::Path>(topic,20);
 		}
 	}
+	intention_pub_ = nh.advertise<visualization_msgs::MarkerArray>("intentions1",10);
 }
 
 
@@ -437,8 +565,8 @@ void IntentionModelling::trajCB(const people_msgs::Person::ConstPtr& msg){
 	        }
          }
     	 int n_points = trajectories_[index].num_points; 
-    	 if(n_points != 0 && calc_distance(msg->position.x,msg->position.y,trajectories_[index].x(n_points-1),trajectories_[index].y(n_points-1)<= dist_thresh_)){
-	    //		return;
+    	 if(n_points != 0 && (msg->position.x == trajectories_[index].x(n_points-1)) &&(msg->position.y == trajectories_[index].y(n_points-1))){
+	    		return;
     	 }
     	 ros::Time current = msg->stamp;
     	 double del_t = (current - trajectories_[index].then).toSec();
@@ -517,15 +645,55 @@ void IntentionModelling::readGoals(){
 	}
 
 	//display all goal locations
+	visualization_msgs::MarkerArray goal_locs;
 	for(int i = 0; i < num_goals ;i++){
+/*		visualization_msgs::Marker marker;
+		// Set the frame ID and timestamp.  See the TF tutorials for information on these.
+		marker.header.frame_id = "map";
+		marker.header.stamp = ros::Time::now();
+
+		// Set the namespace and id for this marker.  This serves to create a unique ID
+		// Any marker sent with the same namespace and id will overwrite the old one
+		marker.ns = "golas";
+		marker.id = 323232+i;
+
+		// Set the marker type.  Initially this is CUBE, and cycles between that and SPHERE, ARROW, and CYLINDER
+		marker.type = visualization_msgs::Marker::SPHERE;
+
+		// Set the marker action.  Options are ADD, DELETE, and new in ROS Indigo: 3 (DELETEALL)
+		marker.action = visualization_msgs::Marker::ADD;
+
+		// Set the pose of the marker.  This is a full 6DOF pose relative to the frame/time specified in the header
+		marker.pose.position.x = goal_locations_[i][0];
+		marker.pose.position.y = goal_locations_[i][1];
+		marker.pose.position.z = 0.2;
+		marker.pose.orientation.x = 0.0;
+		marker.pose.orientation.y = 0.0;
+		marker.pose.orientation.z = 0.0;
+		marker.pose.orientation.w = 1.0;
+
+		// Set the scale of the marker -- 1x1x1 here means 1m on a side
+		marker.scale.x = 1.0;
+		marker.scale.y = 1.0;
+		marker.scale.z = 1.0;
+
+		// Set the color -- be sure to set alpha to something non-zero!
+		marker.color.r = 0.0f;
+		marker.color.g = 1.0f;
+		marker.color.b = 0.0f;
+		marker.color.a = 1.0;
+
+		marker.lifetime = ros::Duration();
+		goal_locs.markers.push_back(marker);*/
 		ROS_WARN("goal %d `(%f,%f)",i,goal_locations_[i][0],goal_locations_[i][1]);
 	}
+//	goal_location_pub_.publish(goal_locs);
 }
 int main(int argc, char **argv){
 	ros::init(argc,argv,"intention_modelling");
 	ros::NodeHandle nh;
 	IntentionModelling intention_modelling;
-	ros::Publisher smooth_human_pose = nh.advertise<nav_msgs::Path>("human_pose_smooth",20);
+	ros::Publisher smooth_human_pose = nh.advertise<nav_msgs::Path>("human_pose_smooth1",20);
 	ros::Rate r(10);
 	while(ros::ok()){
 	    ros::spinOnce();
